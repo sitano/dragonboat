@@ -68,8 +68,10 @@ type DecodedCmd struct {
 type decodeConfig struct {
 	decodeEntryCmd bool
 
-	cmdDecoder func([]byte) (msg ProtoMessage, sum string, err error)
+	cmdDecoder CmdDecoderFunc
 }
+
+type CmdDecoderFunc func([]byte) (msg ProtoMessage, sum string, err error)
 
 // DecodeOption configures DecodeCmd behavior.
 type DecodeOption func(*decodeConfig)
@@ -90,7 +92,7 @@ func WithEntryCmdDecode() DecodeOption {
 }
 
 // WithCmdDecoder sets the function to decode a cmd field.
-func WithCmdDecoder(f func([]byte) (ProtoMessage, string, error)) DecodeOption {
+func WithCmdDecoder(f CmdDecoderFunc) DecodeOption {
 	return func(c *decodeConfig) {
 		c.cmdDecoder = f
 	}

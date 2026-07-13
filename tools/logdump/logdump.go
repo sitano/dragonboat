@@ -77,3 +77,7 @@ func (l *LogDump) GetRaftDataStatus() (raftpb.RaftDataStatus, error) {
 
 	return s, nil
 }
+
+func (l *LogDump) Dumper() Dumper {
+	return *NewDumper(l.log)
+}

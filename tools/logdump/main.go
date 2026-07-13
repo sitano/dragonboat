@@ -18,18 +18,36 @@ import (
 	"os"
 	"path"
 
-	"github.com/lni/dragonboat/v3/config"
-	"github.com/lni/dragonboat/v3/internal/fileutil"
-	"github.com/lni/dragonboat/v3/internal/logdb"
-	"github.com/lni/dragonboat/v3/internal/logdb/kv/pebble"
-	"github.com/lni/dragonboat/v3/internal/vfs"
-	"github.com/lni/dragonboat/v3/raftpb"
 	"github.com/lni/dragonboat/v3/tools/logdump/proto"
 )
 
+type DescribeConfig struct {
+	Dir     string
+	Cluster uint64
+	Node    uint64
+}
+
+type ScanConfig struct {
+	Dir     string
+	Cluster uint64
+	Node    uint64
+
+	From  uint64
+	To    uint64
+	Index uint64
+	Limit uint64
+
+	Format string
+
+	DecodeEntryHeader bool
+	DecodeEntryCmd    bool
+
+	CmdDecoder proto.CmdDecoderFunc
+}
+
 func main() {
 	if len(os.Args) < 2 {
-		printUsage()
+		PrintUsage()
 		os.Exit(1)
 	}
 
@@ -39,7 +57,7 @@ func main() {
 		if arg == "-h" || arg == "--help" || arg == "help" {
 			switch cmd {
 			case "describe", "scan":
-				printUsage()
+				PrintUsage()
 				return
 			}
 		}
@@ -49,68 +67,126 @@ func main() {
 	case "describe":
 		if len(os.Args) < 3 {
 			fmt.Fprintf(os.Stderr, "error: data directory is required\n\n")
-			printUsage()
+			PrintUsage()
 			os.Exit(1)
 		}
-		runDescribe(os.Args[2], os.Args[3:])
+		cfg, err := ParseDescribeFlags(os.Args[2], os.Args[3:])
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "error: %v\n\n", err)
+			PrintUsage()
+			os.Exit(1)
+		}
+		DescribeCmd(cfg)
 	case "scan":
 		if len(os.Args) < 3 {
 			fmt.Fprintf(os.Stderr, "error: data directory is required\n\n")
-			printUsage()
+			PrintUsage()
 			os.Exit(1)
 		}
-		runScan(os.Args[2], os.Args[3:])
+		cfg, err := ParseScanFlags(os.Args[2], os.Args[3:])
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "error: %v\n\n", err)
+			PrintUsage()
+			os.Exit(1)
+		}
+		ScanCmd(cfg)
 	case "-h", "--help", "help":
-		printUsage()
+		PrintUsage()
 	default:
 		fmt.Fprintf(os.Stderr, "unknown command: %s\n\n", cmd)
-		printUsage()
+		PrintUsage()
 		os.Exit(1)
 	}
 }
 
-func runDescribe(dir string, flagArgs []string) {
-	if fi, err := os.Stat(dir); err != nil || !fi.IsDir() {
-		fmt.Fprintf(os.Stderr, "error: invalid data directory %q\n", dir)
+func DescribeCmd(cfg *DescribeConfig) error {
+	ld, err := OpenLogDumpReadOnly(cfg.Dir, true)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error opening database:\n%v", err)
 		os.Exit(1)
 	}
 
-	fs := flag.NewFlagSet("describe", flag.ExitOnError)
-	cluster := fs.Uint64("cluster", 0, "Filter by cluster ID (optional).")
-	node := fs.Uint64("node", 0, "Filter by node ID (optional).")
-	fs.Parse(flagArgs)
-
-	s := raftpb.RaftDataStatus{}
-	if err := fileutil.GetFlagFileContent(dir, flagFilename, &s, vfs.DefaultFS); err != nil {
-		fmt.Fprintf(os.Stderr, "error reading %s: %v\n", path.Join(dir, flagFilename), err)
+	s, err := ld.GetRaftDataStatus()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error reading %s: %v\n", path.Join(cfg.Dir, flagFilename), err)
+		os.Exit(1)
 	}
 
 	fmt.Println("MANIFEST:", ManifestString(&s))
 
-	db, err := logdb.OpenReadOnlyLogDB(config.GetDefaultLogDBConfig(),
-		dir, path.Join(dir, "wal"),
-		vfs.DefaultFS, pebble.PebbleReadOnlyNoLockKVStore)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "error opening database: %v\n", err)
-		os.Exit(1)
-	}
-
-	d := NewDumper(db)
+	d := ld.Dumper()
 	defer d.Close()
 
-	summaries, err := d.Describe(*cluster, *node)
+	summaries, err := d.Describe(cfg.Cluster, cfg.Node)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error describing nodes: %v\n", err)
 		os.Exit(1)
 	}
 
 	PrintSummary(summaries)
+
+	return nil
 }
 
-func runScan(dir string, flagArgs []string) {
-	if fi, err := os.Stat(dir); err != nil || !fi.IsDir() {
-		fmt.Fprintf(os.Stderr, "error: invalid data directory %q\n", dir)
+func ScanCmd(cfg *ScanConfig) error {
+	ld, err := OpenLogDumpReadOnly(cfg.Dir, true)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error opening database:\n%v", err)
 		os.Exit(1)
+	}
+
+	d := ld.Dumper()
+	defer d.Close()
+
+	result, err := d.Scan(cfg.Cluster, cfg.Node, cfg.From, cfg.To, cfg.Limit)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error getting entries: %v\n", err)
+		os.Exit(1)
+	}
+
+	var opts []proto.DecodeOption
+	if cfg.DecodeEntryHeader {
+		opts = append(opts, proto.WithEntryHeaderDecode())
+	}
+	if cfg.DecodeEntryCmd {
+		opts = append(opts, proto.WithEntryCmdDecode())
+	}
+	if cfg.CmdDecoder != nil {
+		opts = append(opts, proto.WithCmdDecoder(cfg.CmdDecoder))
+	}
+
+	switch cfg.Format {
+	case "json":
+		PrintScanJSON(result, cfg.Cluster, cfg.Node, opts...)
+	default:
+		PrintScanTable(result, cfg.Cluster, cfg.Node, opts...)
+	}
+
+	return nil
+}
+
+func ParseDescribeFlags(dir string, flagArgs []string) (*DescribeConfig, error) {
+	if fi, err := os.Stat(dir); err != nil || !fi.IsDir() {
+		return nil, fmt.Errorf("invalid data directory %q", dir)
+	}
+
+	fs := flag.NewFlagSet("describe", flag.ExitOnError)
+	cluster := fs.Uint64("cluster", 0, "Filter by cluster ID (optional).")
+	node := fs.Uint64("node", 0, "Filter by node ID (optional).")
+	if err := fs.Parse(flagArgs); err != nil {
+		return nil, err
+	}
+
+	return &DescribeConfig{
+		Dir:     dir,
+		Cluster: *cluster,
+		Node:    *node,
+	}, nil
+}
+
+func ParseScanFlags(dir string, flagArgs []string) (*ScanConfig, error) {
+	if fi, err := os.Stat(dir); err != nil || !fi.IsDir() {
+		return nil, fmt.Errorf("invalid data directory %q", dir)
 	}
 
 	fs := flag.NewFlagSet("scan", flag.ExitOnError)
@@ -124,24 +200,23 @@ func runScan(dir string, flagArgs []string) {
 	decodeEntryHeader := fs.Bool("decode-entry-header", false, "Structurally decode Cmd payloads (protobuf, snappy).")
 	decodeEntryCmd := fs.Bool("decode-entry-cmd", false, "Walk protobuf wire format in Cmd payloads (implies --decode-value).")
 
-	fs.Parse(flagArgs)
+	if err := fs.Parse(flagArgs); err != nil {
+		return nil, err
+	}
 
 	if *decodeEntryCmd {
 		*decodeEntryHeader = true
 	}
 
 	if *cluster == 0 {
-		fmt.Fprintf(os.Stderr, "error: --cluster is required and must be > 0\n")
-		os.Exit(1)
+		return nil, fmt.Errorf("--cluster is required and must be > 0")
 	}
 	if *node == 0 {
-		fmt.Fprintf(os.Stderr, "error: --node is required and must be > 0\n")
-		os.Exit(1)
+		return nil, fmt.Errorf("--node is required and must be > 0")
 	}
 
 	if *format != "table" && *format != "json" {
-		fmt.Fprintf(os.Stderr, "error: --format must be \"table\" or \"json\", got %q\n", *format)
-		os.Exit(1)
+		return nil, fmt.Errorf("--format must be \"table\" or \"json\", got %q", *format)
 	}
 
 	// --index is a shortcut for --from N --to N+1.
@@ -150,40 +225,21 @@ func runScan(dir string, flagArgs []string) {
 		*to = *index + 1
 	}
 
-	db, err := logdb.OpenReadOnlyLogDB(config.GetDefaultLogDBConfig(),
-		dir, path.Join(dir, "wal"),
-		vfs.DefaultFS, pebble.PebbleReadOnlyNoLockKVStore)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "error opening database: %v\n", err)
-		os.Exit(1)
-	}
-
-	d := NewDumper(db)
-	defer d.Close()
-
-	result, err := d.Scan(*cluster, *node, *from, *to, *limit)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "error getting entries: %v\n", err)
-		os.Exit(1)
-	}
-
-	var opts []proto.DecodeOption
-	if *decodeEntryHeader {
-		opts = append(opts, proto.WithEntryHeaderDecode())
-	}
-	if *decodeEntryCmd {
-		opts = append(opts, proto.WithEntryCmdDecode())
-	}
-
-	switch *format {
-	case "json":
-		PrintScanJSON(result, *cluster, *node, opts...)
-	default:
-		PrintScanTable(result, *cluster, *node, opts...)
-	}
+	return &ScanConfig{
+		Dir:               dir,
+		Cluster:           *cluster,
+		Node:              *node,
+		From:              *from,
+		To:                *to,
+		Index:             *index,
+		Limit:             *limit,
+		Format:            *format,
+		DecodeEntryHeader: *decodeEntryHeader,
+		DecodeEntryCmd:    *decodeEntryCmd,
+	}, nil
 }
 
-func printUsage() {
+func PrintUsage() {
 	fmt.Print(`logdump — Dragonboat RAFT log inspection tool
 
 USAGE:
