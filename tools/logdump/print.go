@@ -111,7 +111,7 @@ func PrintSummary(summaries []NodeSummary) {
 
 // PrintScanTable prints the state, snapshots, and entries for a node in a
 // human-readable kebab-section format.
-func PrintScanTable(r *ScanResult, clusterID, nodeID uint64, decodeEntryHeader, decodeEntryCmd bool) {
+func PrintScanTable(r *ScanResult, clusterID, nodeID uint64, opts ...proto.DecodeOption) {
 	// ── state ──
 	fmt.Printf("── state: cluster=%d node=%d ──\n", clusterID, nodeID)
 	fmt.Printf("Term: %d, Vote: %d, Commit: %d\n\n", r.State.Term, r.State.Vote, r.State.Commit)
@@ -143,11 +143,7 @@ func PrintScanTable(r *ScanResult, clusterID, nodeID uint64, decodeEntryHeader, 
 				typeName = "── " + typeName
 			}
 			cmdStr := formatCmd(e)
-			if decodeEntryHeader {
-				var opts []proto.DecodeOption
-				if decodeEntryCmd {
-					opts = append(opts, proto.WithEntryCmdDecode())
-				}
+			if len(opts) > 0 {
 				if d, err := proto.DecodeCmd(e, opts...); err != nil {
 					cmdStr = fmt.Sprintf("<decode error: %v>", err)
 				} else {
@@ -197,7 +193,7 @@ type jsonResult struct {
 }
 
 // PrintScanJSON prints the GetEntries result as compact JSON to stdout.
-func PrintScanJSON(r *ScanResult, clusterID, nodeID uint64, decodeEntryHeader, decodeEntryCmd bool) {
+func PrintScanJSON(r *ScanResult, clusterID, nodeID uint64, opts ...proto.DecodeOption) {
 	out := jsonResult{
 		ClusterID:  clusterID,
 		NodeID:     nodeID,
@@ -221,12 +217,7 @@ func PrintScanJSON(r *ScanResult, clusterID, nodeID uint64, decodeEntryHeader, d
 	for _, e := range r.Entries {
 		var cmdField interface{}
 
-		if decodeEntryHeader {
-			var opts []proto.DecodeOption
-			if decodeEntryCmd {
-				opts = append(opts, proto.WithEntryCmdDecode())
-			}
-
+		if len(opts) > 0 {
 			d, err := proto.DecodeCmd(e, opts...)
 			if err != nil {
 				cmdField = map[string]string{"error": err.Error()}

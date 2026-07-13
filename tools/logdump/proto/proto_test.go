@@ -808,4 +808,4 @@ func TestWalkProtoMessage_MultipleFields(t *testing.T) {
 	if _, ok := pm[2].Value.(ProtoMessage); !ok {
 		t.Errorf("field 2: Value type = %T, want ProtoMessage (printable bytes parsed as nested)", pm[2].Value)
 	}
-	}
+}

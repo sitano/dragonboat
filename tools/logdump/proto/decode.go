@@ -66,17 +66,33 @@ type DecodedCmd struct {
 }
 
 type decodeConfig struct {
-	walkEntryCmd bool
+	decodeEntryCmd bool
+
+	cmdDecoder func([]byte) (msg ProtoMessage, sum string, err error)
 }
 
 // DecodeOption configures DecodeCmd behavior.
 type DecodeOption func(*decodeConfig)
 
+// WithEntryHeaderDecode enables decoding of entry headers.
+func WithEntryHeaderDecode() DecodeOption {
+	return func(c *decodeConfig) {
+		// stub
+	}
+}
+
 // WithEntryCmdDecode enables protobuf payload walking on EncodedEntry
 // and raw Cmd fields via WalkProtoMessage.
 func WithEntryCmdDecode() DecodeOption {
 	return func(c *decodeConfig) {
-		c.walkEntryCmd = true
+		c.decodeEntryCmd = true
+	}
+}
+
+// WithCmdDecoder sets the function to decode a cmd field.
+func WithCmdDecoder(f func([]byte) (ProtoMessage, string, error)) DecodeOption {
+	return func(c *decodeConfig) {
+		c.cmdDecoder = f
 	}
 }
 
@@ -221,12 +237,19 @@ func decodeEncodedEntry(cmd []byte, cfg *decodeConfig) (*DecodedCmd, error) {
 
 	switch comp {
 	case eeNoCompression:
+		var summary string
 		detail.Compression = "none"
 		payload := cmd[1:]
 		detail.Size = len(payload)
-		if cfg.walkEntryCmd {
-			if pm, err := WalkProtoMessage(payload); err == nil {
-				detail.ProtoMessage = pm
+		if cfg.decodeEntryCmd {
+			var err error
+			if cfg.cmdDecoder != nil {
+				detail.ProtoMessage, summary, err = cfg.cmdDecoder(payload)
+			} else {
+				detail.ProtoMessage, err = WalkProtoMessage(payload)
+			}
+			if err != nil {
+				return nil, err
 			}
 		}
 		if detail.ProtoMessage == nil {
@@ -235,7 +258,9 @@ func decodeEncodedEntry(cmd []byte, cfg *decodeConfig) (*DecodedCmd, error) {
 				detail.PayloadText = string(payload)
 			}
 		}
-		summary := fmt.Sprintf("[v0 uncompressed] %d B", detail.Size)
+		if summary == "" {
+			summary = fmt.Sprintf("[v0 uncompressed] %d B", detail.Size)
+		}
 		return &DecodedCmd{
 			Kind:         KindEncodedEntry,
 			Summary:      summary,
@@ -243,29 +268,38 @@ func decodeEncodedEntry(cmd []byte, cfg *decodeConfig) (*DecodedCmd, error) {
 		}, nil
 
 	case eeSnappy:
+		var summary string
 		detail.Compression = "snappy"
 		decodedLen, err := snappy.DecodedLen(cmd[1:])
 		if err != nil {
 			return nil, fmt.Errorf("snappy decoded length: %w", err)
 		}
 		dst := make([]byte, decodedLen)
-		result, err := snappy.Decode(dst, cmd[1:])
+		payload, err := snappy.Decode(dst, cmd[1:])
 		if err != nil {
 			return nil, fmt.Errorf("snappy decode: %w", err)
 		}
-		detail.Size = len(result)
-		if cfg.walkEntryCmd {
-			if pm, err := WalkProtoMessage(result); err == nil {
-				detail.ProtoMessage = pm
+		detail.Size = len(payload)
+		if cfg.decodeEntryCmd {
+			var err error
+			if cfg.cmdDecoder != nil {
+				detail.ProtoMessage, summary, err = cfg.cmdDecoder(payload)
+			} else {
+				detail.ProtoMessage, err = WalkProtoMessage(payload)
+			}
+			if err != nil {
+				return nil, err
 			}
 		}
 		if detail.ProtoMessage == nil {
-			detail.PayloadHex = hex.EncodeToString(result)
-			if isPrintable(string(result)) {
-				detail.PayloadText = string(result)
+			detail.PayloadHex = hex.EncodeToString(payload)
+			if isPrintable(string(payload)) {
+				detail.PayloadText = string(payload)
 			}
 		}
-		summary := fmt.Sprintf("[v0 snappy] %d B", detail.Size)
+		if summary == "" {
+			summary = fmt.Sprintf("[v0 snappy] %d B", detail.Size)
+		}
 		return &DecodedCmd{
 			Kind:         KindEncodedEntry,
 			Summary:      summary,
@@ -286,7 +320,7 @@ func decodeRaw(cmd []byte, cfg *decodeConfig) *DecodedCmd {
 		Summary: summary,
 		RawHex:  hex.EncodeToString(cmd),
 	}
-	if cfg.walkEntryCmd && len(cmd) > 0 {
+	if cfg.decodeEntryCmd && len(cmd) > 0 {
 		if pm, err := WalkProtoMessage(cmd); err == nil {
 			d.ProtoMessage = pm
 		}

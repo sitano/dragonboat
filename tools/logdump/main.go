@@ -24,9 +24,8 @@ import (
 	"github.com/lni/dragonboat/v3/internal/logdb/kv/pebble"
 	"github.com/lni/dragonboat/v3/internal/vfs"
 	"github.com/lni/dragonboat/v3/raftpb"
+	"github.com/lni/dragonboat/v3/tools/logdump/proto"
 )
-
-const flagFilename = "dragonboat.ds"
 
 func main() {
 	if len(os.Args) < 2 {
@@ -168,11 +167,19 @@ func runScan(dir string, flagArgs []string) {
 		os.Exit(1)
 	}
 
+	var opts []proto.DecodeOption
+	if *decodeEntryHeader {
+		opts = append(opts, proto.WithEntryHeaderDecode())
+	}
+	if *decodeEntryCmd {
+		opts = append(opts, proto.WithEntryCmdDecode())
+	}
+
 	switch *format {
 	case "json":
-		PrintScanJSON(result, *cluster, *node, *decodeEntryHeader, *decodeEntryCmd)
+		PrintScanJSON(result, *cluster, *node, opts...)
 	default:
-		PrintScanTable(result, *cluster, *node, *decodeEntryHeader, *decodeEntryCmd)
+		PrintScanTable(result, *cluster, *node, opts...)
 	}
 }
 
@@ -194,13 +201,13 @@ LIST FLAGS:
 GET FLAGS:
   --cluster N   Cluster ID (required).
   --node N      Node ID (required).
-  
-	--from N      Start index (inclusive, default: first available).
+
+  --from N      Start index (inclusive, default: first available).
   --to N        End index (exclusive, default: last+1).
   --index N     Single entry shortcut (--from N --to N+1).
   --limit N     Max entries to display (default: 100, 0 = unlimited).
 
-	--format fmt  Output format: table (default) or json.
+  --format fmt  Output format: table (default) or json.
 
   --decode-entry-header Structurally decode Cmd payloads (raftpb.Entry).
   --decode-entry-cmd Walk protobuf wire format in Cmd payloads (implies --decode-entry-header).
