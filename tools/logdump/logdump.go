@@ -13,7 +13,6 @@
 package main
 
 import (
-	"fmt"
 	"os"
 	"path"
 
@@ -49,8 +48,7 @@ func OpenLogDumpReadOnly(dir string, ignoreLock bool) (*LogDump, error) {
 	db, err := logdb.OpenReadOnlyLogDB(config.GetDefaultLogDBConfig(),
 		dir, path.Join(dir, "wal"), vfs, f)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "error opening database: %v\n", err)
-		os.Exit(1)
+		return nil, errors.Wrap(err, "error opening database")
 	}
 
 	return &LogDump{

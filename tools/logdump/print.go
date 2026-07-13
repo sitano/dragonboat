@@ -17,7 +17,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"os"
+	"io"
 	"text/tabwriter"
 
 	pb "github.com/lni/dragonboat/v3/raftpb"
@@ -91,9 +91,9 @@ func ManifestString(m *pb.RaftDataStatus) string {
 
 // PrintSummary prints a table of NodeSummary rows to stdout using aligned
 // columns.
-func PrintSummary(summaries []NodeSummary) {
-	w := tabwriter.NewWriter(os.Stdout, 0, 0, 3, ' ', 0)
-	fmt.Fprintln(w, "CLUSTER\tNODE\tTERM\tVOTE\tCOMMIT\tENTRIES\tRANGE\tSNAPSHOTS\tBOOTSTRAP")
+func PrintSummary(w io.Writer, summaries []NodeSummary) {
+	tabw := tabwriter.NewWriter(w, 0, 0, 3, ' ', 0)
+	fmt.Fprintln(tabw, "CLUSTER\tNODE\tTERM\tVOTE\tCOMMIT\tENTRIES\tRANGE\tSNAPSHOTS\tBOOTSTRAP")
 	for _, s := range summaries {
 		rng := ""
 		if s.EntryCount > 0 {
@@ -101,41 +101,41 @@ func PrintSummary(summaries []NodeSummary) {
 		} else {
 			rng = "(empty)"
 		}
-		fmt.Fprintf(w, "%d\t%d\t%d\t%d\t%d\t%d\t%s\t%d\t%s\n",
+		fmt.Fprintf(tabw, "%d\t%d\t%d\t%d\t%d\t%d\t%s\t%d\t%s\n",
 			s.ClusterID, s.NodeID,
 			s.Term, s.Vote, s.Commit,
 			s.EntryCount, rng, s.SnapshotCnt, s.Bootstrap)
 	}
-	w.Flush()
+	tabw.Flush()
 }
 
 // PrintScanTable prints the state, snapshots, and entries for a node in a
 // human-readable kebab-section format.
-func PrintScanTable(r *ScanResult, clusterID, nodeID uint64, opts ...proto.DecodeOption) {
+func PrintScanTable(w io.Writer, r *ScanResult, clusterID, nodeID uint64, opts ...proto.DecodeOption) {
 	// ── state ──
-	fmt.Printf("── state: cluster=%d node=%d ──\n", clusterID, nodeID)
-	fmt.Printf("Term: %d, Vote: %d, Commit: %d\n\n", r.State.Term, r.State.Vote, r.State.Commit)
+	fmt.Fprintf(w, "── state: cluster=%d node=%d ──\n", clusterID, nodeID)
+	fmt.Fprintf(w, "Term: %d, Vote: %d, Commit: %d\n\n", r.State.Term, r.State.Vote, r.State.Commit)
 
 	// ── snapshots ──
 	if len(r.Snapshots) > 0 {
-		fmt.Printf("── snapshots ──\n")
-		w := tabwriter.NewWriter(os.Stdout, 0, 0, 3, ' ', 0)
-		fmt.Fprintln(w, "INDEX\tTERM\tMEMBERS")
+		fmt.Fprintf(w, "── snapshots ──\n")
+		tabw := tabwriter.NewWriter(w, 0, 0, 3, ' ', 0)
+		fmt.Fprintln(tabw, "INDEX\tTERM\tMEMBERS")
 		for _, snap := range r.Snapshots {
 			n := len(snap.Membership.Addresses)
-			fmt.Fprintf(w, "%d\t%d\t%d addrs\n", snap.Index, snap.Term, n)
+			fmt.Fprintf(tabw, "%d\t%d\t%d addrs\n", snap.Index, snap.Term, n)
 		}
-		w.Flush()
-		fmt.Println()
+		tabw.Flush()
+		fmt.Fprintln(w)
 	}
 
 	// ── entries ──
-	fmt.Printf("── entries ──\n")
+	fmt.Fprintf(w, "── entries ──\n")
 	if len(r.Entries) == 0 {
-		fmt.Println("(no entries)")
+		fmt.Fprintln(w, "(no entries)")
 	} else {
-		w := tabwriter.NewWriter(os.Stdout, 0, 0, 3, ' ', 0)
-		fmt.Fprintln(w, "INDEX\tTERM\tTYPE\tKEY\tCLIENT\tSERIES\tRESPTO\tCMD")
+		tabw := tabwriter.NewWriter(w, 0, 0, 3, ' ', 0)
+		fmt.Fprintln(tabw, "INDEX\tTERM\tTYPE\tKEY\tCLIENT\tSERIES\tRESPTO\tCMD")
 		for _, e := range r.Entries {
 			typeName := e.Type.String()
 			// Visually dim entries from internal Raft layers.
@@ -152,12 +152,12 @@ func PrintScanTable(r *ScanResult, clusterID, nodeID uint64, opts ...proto.Decod
 			}
 			keyHex := fmt.Sprintf("%016x", e.Key)
 			clientHex := fmt.Sprintf("%016x", e.ClientID)
-			fmt.Fprintf(w, "%d\t%d\t%s\t0x%s\t0x%s\t%d\t%d\t%s\n",
+			fmt.Fprintf(tabw, "%d\t%d\t%s\t0x%s\t0x%s\t%d\t%d\t%s\n",
 				e.Index, e.Term, typeName,
 				keyHex, clientHex, e.SeriesID, e.RespondedTo,
 				cmdStr)
 		}
-		w.Flush()
+		tabw.Flush()
 	}
 }
 
@@ -193,7 +193,7 @@ type jsonResult struct {
 }
 
 // PrintScanJSON prints the GetEntries result as compact JSON to stdout.
-func PrintScanJSON(r *ScanResult, clusterID, nodeID uint64, opts ...proto.DecodeOption) {
+func PrintScanJSON(w io.Writer, r *ScanResult, clusterID, nodeID uint64, opts ...proto.DecodeOption) {
 	out := jsonResult{
 		ClusterID:  clusterID,
 		NodeID:     nodeID,
@@ -240,7 +240,7 @@ func PrintScanJSON(r *ScanResult, clusterID, nodeID uint64, opts ...proto.Decode
 		})
 	}
 
-	enc := json.NewEncoder(os.Stdout)
+	enc := json.NewEncoder(w)
 	enc.SetIndent("", "")
 	enc.Encode(out)
 }

@@ -15,16 +15,32 @@ package main
 import (
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"path"
 
+	"github.com/cockroachdb/errors"
 	"github.com/lni/dragonboat/v3/tools/logdump/proto"
 )
+
+type IOConfig struct {
+	Stdout io.Writer
+	Stderr io.Writer
+}
+
+func NewIOConfig() *IOConfig {
+	return &IOConfig{
+		Stdout: os.Stdout,
+		Stderr: os.Stderr,
+	}
+}
 
 type DescribeConfig struct {
 	Dir     string
 	Cluster uint64
 	Node    uint64
+
+	IO *IOConfig
 }
 
 type ScanConfig struct {
@@ -42,6 +58,7 @@ type ScanConfig struct {
 	DecodeEntryHeader bool
 	DecodeEntryCmd    bool
 
+	IO         *IOConfig
 	CmdDecoder proto.CmdDecoderFunc
 }
 
@@ -63,67 +80,75 @@ func main() {
 		}
 	}
 
+	var err error
 	switch cmd {
 	case "describe":
-		if len(os.Args) < 3 {
-			fmt.Fprintf(os.Stderr, "error: data directory is required\n\n")
-			PrintUsage()
-			os.Exit(1)
-		}
-		cfg, err := ParseDescribeFlags(os.Args[2], os.Args[3:])
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "error: %v\n\n", err)
-			PrintUsage()
-			os.Exit(1)
-		}
-		DescribeCmd(cfg)
+		err = runDescribe(os.Args[2:])
 	case "scan":
-		if len(os.Args) < 3 {
-			fmt.Fprintf(os.Stderr, "error: data directory is required\n\n")
-			PrintUsage()
-			os.Exit(1)
-		}
-		cfg, err := ParseScanFlags(os.Args[2], os.Args[3:])
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "error: %v\n\n", err)
-			PrintUsage()
-			os.Exit(1)
-		}
-		ScanCmd(cfg)
+		err = runScan(os.Args[2:])
 	case "-h", "--help", "help":
 		PrintUsage()
 	default:
-		fmt.Fprintf(os.Stderr, "unknown command: %s\n\n", cmd)
+		err = errors.Newf("unknown command: %s", cmd)
 		PrintUsage()
+	}
+
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "%v\n", err)
 		os.Exit(1)
 	}
+}
+
+func runDescribe(args []string) error {
+	if len(args) == 0 {
+		return errors.New("error: data directory is required")
+	}
+
+	ioConfig := NewIOConfig()
+	cfg, err := ParseDescribeFlags(ioConfig, args[0], args[1:])
+	if err != nil {
+		return err
+	}
+
+	return DescribeCmd(cfg)
+}
+
+func runScan(args []string) error {
+	if len(args) == 0 {
+		return errors.New("error: data directory is required")
+	}
+
+	ioConfig := NewIOConfig()
+	cfg, err := ParseScanFlags(ioConfig, args[0], args[1:])
+	if err != nil {
+		return err
+	}
+
+	return ScanCmd(cfg)
 }
 
 func DescribeCmd(cfg *DescribeConfig) error {
 	ld, err := OpenLogDumpReadOnly(cfg.Dir, true)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "error opening database:\n%v", err)
-		os.Exit(1)
+		return errors.Wrap(err, "error opening database")
 	}
 
 	s, err := ld.GetRaftDataStatus()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "error reading %s: %v\n", path.Join(cfg.Dir, flagFilename), err)
-		os.Exit(1)
+		return errors.Wrapf(err, "error reading %s", path.Join(cfg.Dir, flagFilename))
 	}
 
-	fmt.Println("MANIFEST:", ManifestString(&s))
+	fmt.Fprintln(cfg.IO.Stdout, "MANIFEST:", ManifestString(&s))
 
 	d := ld.Dumper()
 	defer d.Close()
 
 	summaries, err := d.Describe(cfg.Cluster, cfg.Node)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "error describing nodes: %v\n", err)
-		os.Exit(1)
+		return errors.Wrap(err, "error describing nodes")
 	}
 
-	PrintSummary(summaries)
+	PrintSummary(cfg.IO.Stdout, summaries)
 
 	return nil
 }
@@ -131,8 +156,7 @@ func DescribeCmd(cfg *DescribeConfig) error {
 func ScanCmd(cfg *ScanConfig) error {
 	ld, err := OpenLogDumpReadOnly(cfg.Dir, true)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "error opening database:\n%v", err)
-		os.Exit(1)
+		return errors.Wrap(err, "error opening database")
 	}
 
 	d := ld.Dumper()
@@ -140,8 +164,7 @@ func ScanCmd(cfg *ScanConfig) error {
 
 	result, err := d.Scan(cfg.Cluster, cfg.Node, cfg.From, cfg.To, cfg.Limit)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "error getting entries: %v\n", err)
-		os.Exit(1)
+		return errors.Wrap(err, "error getting entries")
 	}
 
 	var opts []proto.DecodeOption
@@ -157,17 +180,17 @@ func ScanCmd(cfg *ScanConfig) error {
 
 	switch cfg.Format {
 	case "json":
-		PrintScanJSON(result, cfg.Cluster, cfg.Node, opts...)
+		PrintScanJSON(cfg.IO.Stdout, result, cfg.Cluster, cfg.Node, opts...)
 	default:
-		PrintScanTable(result, cfg.Cluster, cfg.Node, opts...)
+		PrintScanTable(cfg.IO.Stdout, result, cfg.Cluster, cfg.Node, opts...)
 	}
 
 	return nil
 }
 
-func ParseDescribeFlags(dir string, flagArgs []string) (*DescribeConfig, error) {
+func ParseDescribeFlags(io *IOConfig, dir string, flagArgs []string) (*DescribeConfig, error) {
 	if fi, err := os.Stat(dir); err != nil || !fi.IsDir() {
-		return nil, fmt.Errorf("invalid data directory %q", dir)
+		return nil, errors.Wrapf(err, "invalid data directory %q", dir)
 	}
 
 	fs := flag.NewFlagSet("describe", flag.ExitOnError)
@@ -178,15 +201,16 @@ func ParseDescribeFlags(dir string, flagArgs []string) (*DescribeConfig, error) 
 	}
 
 	return &DescribeConfig{
+		IO:      io,
 		Dir:     dir,
 		Cluster: *cluster,
 		Node:    *node,
 	}, nil
 }
 
-func ParseScanFlags(dir string, flagArgs []string) (*ScanConfig, error) {
+func ParseScanFlags(io *IOConfig, dir string, flagArgs []string) (*ScanConfig, error) {
 	if fi, err := os.Stat(dir); err != nil || !fi.IsDir() {
-		return nil, fmt.Errorf("invalid data directory %q", dir)
+		return nil, errors.Wrapf(err, "invalid data directory %q", dir)
 	}
 
 	fs := flag.NewFlagSet("scan", flag.ExitOnError)
@@ -209,14 +233,14 @@ func ParseScanFlags(dir string, flagArgs []string) (*ScanConfig, error) {
 	}
 
 	if *cluster == 0 {
-		return nil, fmt.Errorf("--cluster is required and must be > 0")
+		return nil, errors.New("--cluster is required and must be > 0")
 	}
 	if *node == 0 {
-		return nil, fmt.Errorf("--node is required and must be > 0")
+		return nil, errors.New("--node is required and must be > 0")
 	}
 
 	if *format != "table" && *format != "json" {
-		return nil, fmt.Errorf("--format must be \"table\" or \"json\", got %q", *format)
+		return nil, errors.Errorf("--format must be \"table\" or \"json\", got %q", *format)
 	}
 
 	// --index is a shortcut for --from N --to N+1.
@@ -226,6 +250,7 @@ func ParseScanFlags(dir string, flagArgs []string) (*ScanConfig, error) {
 	}
 
 	return &ScanConfig{
+		IO:                io,
 		Dir:               dir,
 		Cluster:           *cluster,
 		Node:              *node,
